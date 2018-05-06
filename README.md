@@ -28,7 +28,7 @@ class Wc(Tool):
     fileouts = "{out_dir}/{label}.wc.txt"
     sh = "wc -l {fileins} > {fileouts}"
 
-p = Pipeline(tools=[Echo(), Cut()])
+p = Pipeline(tools=[Echo(), Wc()])
 p.labels = ["a", "b"]
 p.excuter_class = JobExcuter
 p.dry_run_flag = False
