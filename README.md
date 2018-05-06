@@ -1,6 +1,6 @@
 ## 1. 简介
 
-bupipeline是为了便于生信分析人员开发和管理流程的python模块。现在仍处于开发测试当中。
+bupipeline是为了便于生信分析人员开发和管理流程的python模块。现在仍处于开发测试当中。支持qsub，使用了特定的qsub和qstat命令，支持南方科技大学hpc和生物系服务器。不同的集群管理系统可能不同，可手动更改这些命令，也可以新建一个JobExcuter类。
 
 ## 2. 入门
 
@@ -41,6 +41,11 @@ p.run()
 from bupipeline import Pipeline, Tool, JobExcuter, QsubExcuter
 ```
 由于要导入bupipeline模块，因此首先需要将bupipeline.py所在目录放在python模块搜索路径内。
+```
+#在~/.bashrc里写入：
+export PYTHONPATH=bupipeline_path:$PYTHONPATH
+#运行source ~/.bashrc命令
+```
 
 ### 2.3 示例介绍
 
@@ -83,7 +88,7 @@ p = Pipeline(tools=[echo_tool, cut_tool])
 因此一般在pipleine run前更改Tool对象和Pipeline对象的值。而定义一个新的Tool类相当于更改一些属性值的默认值。这时可以有几种方式更改，一个是写成类的属性值（如上文），一个是写入pre_init方法和init方法中,这两个方法在实例化对象时会依次运行，这里面可以写self.fileins=""。之所以用pre_init是便于基于某个Tool类开发新的Tool类。
 
 #### excuter_class等
-示例中我们在run之前设定了`p.excuter_class = JobExcuter`。这里设定了p运行任务时用的是哪种JobExcuter。现在模块提供了两种JobExcuter类，一个是JobExcuter，一个是QsubExcuter（其父类是JobExcuter）。我么也可以根据运行环境的不同，编写新的JobExcuter，一般只需要更改运行方法和检测任务结束的方法即可。
+示例中我们在run之前设定了`p.excuter_class = JobExcuter`。这里设定了p运行任务时用的是哪种JobExcuter。现在模块提供了两种JobExcuter类，一个是JobExcuter，一个是QsubExcuter（其父类是JobExcuter）。我么也可以根据运行环境的不同，编写新的JobExcuter，一般只需要更改运行方法和检测任务结束的方法即可。QsubExcuter用于qsub提交任务，这里支持的是南科大服务器。
 
 `p.dry_run_flag = False`中dry_run_flag设为True，程序并不实际执行任务。设为False才会执行任务。
 
