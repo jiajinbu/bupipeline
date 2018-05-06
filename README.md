@@ -73,7 +73,7 @@ a.config = lambda self, x: x["value"] + 1
 
 并不是所有的属性值都会被这样处理，仅`name`,`fileins`,`fileouts`,`file_sh`,`file_stdout`,`file_stderror`,`sh`会被这样处理（而且是按照这个顺序执行，因此`sh`里的{fileins}会被替换为fileins的真实值，而`fileins`里不应该出现{sh}，事实上，一般也不该出现。）。而且`name`，`file_sh`,`file_stdout`,`file_stderror`往往用Tool默认的值即可，它们是用于生成任务的名字，任务运行的脚本文件、标准输出文件和标准错误输出文件路径。
 
-`fileins`和`fileouts`不一定是一个字符串，也可以是一个列表，一个字典，只要列表的元素或字典的值是一个字符串就行。这样便于写`sh`。
+`fileins`和`fileouts`不一定是一个字符串，也可以是一个列表，一个字典，只要列表的元素或字典的值是一个字符串就行。这样便于写`sh`。它们本身也可以是个函数或方法（参数定义和使用方式类似上面的第4个例子a.config是一个函数和方法）。
 
 #### labels
 这里需要强调一下Tool和Pipeline的labels属性。我们看到`p = Pipeline(tools=[Echo(), Cut()])`，为了更容易理解，这句可以写成
