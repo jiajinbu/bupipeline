@@ -1,0 +1,25 @@
+sample_file = "sample.txt"
+orgnism_name = "ath"  #orgnism_name: ath
+dry_run_flag = false #true|false
+excuter = "QsubExcuter" #JobExcuter | QueueQsubExcuter | BsubExcuter | QueueQsubExcuter
+limit_cores = 0  #Only is used when limit_jobs is 0
+limit_jobs = 0
+
+star_core = 16
+featureCounts_core = 1
+
+select_tools = "star"
+
+[star]
+Header_STAR = 1
+Header_STAROnlyBest = 0
+StarBestMarkDump = 1
+RemoveDump_FeatureCounts_Unique_Mapped_Gene = 1
+MergeFeatureCounts = 1
+
+[star_best]
+Header_STAR = 0
+Header_STAROnlyBest = 1
+StarBestMarkDump = 1
+RemoveDump_FeatureCounts_Unique_Mapped_Gene = 1
+MergeFeatureCounts = 1
