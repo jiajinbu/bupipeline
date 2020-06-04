@@ -182,3 +182,285 @@ Tool每个任务会将值这些值传给JobExcuter以实例化一个JobExcuter�
 5  无需运行
 Status_Flag = ["Preparing", "Queue", "Running", "Finished", "Failure", "Not_need_to_be_run"]
 ```
+
+## 4. 通用pipeline
+
+针对生信分析通常对多个样品并行分析。因此大家可以使用这种pipeline书写模板(这里面处理定义class外其他基本是通用的）：
+
+```
+import bupipeline as bp
+from bupipeline import Tool, LabelsOneJob, Pipeline, bp_parser, Sample
+from busoft import bp_softpath
+import bulib
+import toml
+
+scr_path = os.environ["BUPIPELINEPATH"] + "/RNA/bin/"
+softpath = bp_softpath
+softpath.update({"preDE_script": scr_path + "preDE.py",
+                "extract_rpkm_from_ballgown": scr_path + "extract_rpkm_from_ballgown.R",
+                "rpkm_merge_script": scr_path + "rpkm_merge.py"})
+                
+config_file = sys.argv[1]
+configs = toml.load(config_file)
+
+sample_info = Sample(configs["sample_file"])
+labels = sample_info.labels
+
+class STAR(Tool):
+    #star不需要设置链特异性。
+    #单核跑天龙基因组STAR使用了8.5%的内存，多核会略高一些。20核大概11.6%内存。
+    fileins = ["{in_dir}/{label}.R1.fq.gz", "{in_dir}/{label}.R2.fq.gz"]
+    only_best_flag = ""
+    fileouts = "{out_dir}/{label}.Aligned.sortedByCoord.out.bam"
+    config_path = "{out_dir}/{label}."
+    sh = ("{softpath[star]} --genomeDir {lib[star]} --runThreadN {core} --readFilesIn "
+            " {fileins} --outFileNamePrefix {config_path} " 
+            " {only_best_flag} "
+            " --outSAMtype BAM SortedByCoordinate "
+            " --outSAMunmapped Within "
+            " --outSAMattributes Standard "
+            " --readFilesCommand gunzip -c "
+            " --alignIntronMin 20 "
+            " --alignIntronMax {configs[hisat2_max_intronlen]} && "
+            " {softpath[samtools]} index {fileouts} ")
+    in_dir = ""
+    out_dir = "data/star"
+    core = "{configs[star_core]}"
+    not_trans_value = ["core"]
+    
+class Header_STAR(STAR):
+    fileins = sample_info.get_fileins
+
+class STAROnlyBest(STAR):
+    only_best_flag = " --outFilterMultimapScoreRange 0 "
+    
+class Header_STAROnlyBest(STAROnlyBest):
+    fileins = sample_info.get_fileins
+
+class StarMarkDump(Tool):
+    #会输出未比对序列
+    fileins = "{in_dir}/{label}.Aligned.sortedByCoord.out.bam"
+    fileouts = ["{out_dir}/{label}.markdump.bam", "{out_dir}/{label}.markdump.txt"]
+    sh = ("{softpath[java]} -jar {softpath[picard]} MarkDuplicates "
+            "REMOVE_DUPLICATES=true "
+            "SORTING_COLLECTION_SIZE_RATIO=0.01 "
+            "I={fileins} O={fileouts[0]} M={fileouts[1]} && "
+          "{softpath[samtools]} index {fileouts[0]}")
+    in_dir = "data/star"
+    out_dir = "data/markdump"
+
+class RemoveDump_FeatureCounts_Unique_Mapped_Gene(Tool):
+    fileins =  "{in_dir}/{label}.markdump.bam"
+    fileouts = "{out_dir}/{label}.count.txt"
+    config_path = "{lib[gtf]}" ## MUST GIVEN
+    config = {"multi_mapped_flag": " ", "gtf_format": "GTF"} 
+    in_dir = "data/markdump"
+    sh = "{softpath[featureCounts]} -a {config_path} -F {config[gtf_format]} {config[multi_mapped_flag]} -O -p -T {core} -o {fileouts} {fileins}"
+    out_dir = "data/featurecounts_ir_unique_mapped_markdump"
+    core = "{configs[featureCounts_core]}"
+    not_trans_value = ["core"]
+    
+class MergeFeatureCounts(LabelsOneJob):
+    
+    fileouts = "{out_dir}/all.count.txt"
+    in_dir = "data/featurecounts_ir_unique_mapped_markdump"
+    out_dir = "data/featurecounts_ir_unique_mapped_markdump"
+    
+    def pre_init(self):
+        def get_fileins(config):
+            samples = self.get_sample_labels(config)
+            return bp.extend_format_string("{in_dir}/{sample}.count.txt", config, {"sample": samples})
+            
+        def get_sh(config):
+            labels = config["_not_trans_labels"]
+            label = ",".join(labels)
+            fileins = ",".join(config["fileins"])
+            
+            sh = "%s %s %s %s" % (bp.format_string("{softpath[Rscript]} {softpath[merge_feature_counts]} ", config), 
+                            fileins, label, bp.format_string(" {fileouts} ", config))
+            return sh
+        
+        self.fileins = get_fileins
+        self.sh = get_sh
+        
+def main():
+
+    tools = bp.get_tools_from_toml(configs, globals())
+    main_pipeline = Pipeline(tools=tools,
+                             d={"softpath": softpath,
+                                "lib": getattr(bulib, configs["orgnism_name"]),
+                                "labels": labels,
+                                "configs": configs})
+    main_pipeline.excuter_class = {"JobExcuter":bp.JobExcuter, "QsubExcuter":bp.QsubExcuter, "BsubExcuter":bp.BsubExcuter, "QueueQsubExcuter":bp.QueueQsubExcuter}[configs["excuter"]] 
+    main_pipeline.limit_cores = configs["limit_cores"]
+    main_pipeline.limit_jobs = configs["limit_jobs"]
+    main_pipeline.dry_run_flag = configs["dry_run_flag"]
+    main_pipeline.run()
+
+main()
+```
+
+但你需要提前进行一些设置：
+
+### 4.1 通用配置
+
+#### 4.1.1 bulib
+bulib.py模块里的记录各物种的基因组注释信息。具体请看bulib.py文件。以添加拟南芥注释信息为例，向bulib.py里写入：
+
+```
+all_lib = {}
+
+GENOME_PATH =  "/home/bio/genome/"
+    
+ath_tail10 = {"star": GENOME_PATH + "/ath/build_lib/star",
+             "hisat2": GENOME_PATH + "/ath/build_lib/hisat2/ath",
+             "genome": GENOME_PATH + "/ath/genome.fasta",
+             "genome_fasta_index": GENOME_PATH + "/ath/genome.fasta.fai",
+             "gtf": GENOME_PATH + "/ath/tail10_gene.gtf"
+            }
+            
+ath_Araport11 = ath_tail10.copy()
+ath_Araport11["gtf"] = GENOME_PATH + "/ath/Araport11_gene.gtf"
+                  
+ath = ath_Araport11
+
+all_lib = {}
+all_lib["ath"] = ath
+```
+
+使用时如下:
+```
+orgnism_name = "ath"
+
+import bulib
+
+#method 1
+genome_fasta = bulib.all_lib[orgnism_name]["genome"]
+
+#method 2
+genome_fasta = getattr(bulib, orgnism_name)
+```
+
+#### 4.1.2 busoft
+为了让主流程不受软件版本更改以及软件路径变化的影响（尤其是将流程在新的服务器上运行，很多软件路径和以前的不一致了）。因此将软件路径单独在一个新的文件里进行定义。busoft主要内容是定义bp_softpath。
+
+```
+bp_softpath = {"samtools": "samtools",
+            "python": "python",
+            "featureCounts": "/home/soft/bin/featureCounts",
+            "ShortStack": "ShortStack",
+            "java": "java",
+            "star": "STAR"
+            }
+```
+
+因此使用方法如下：
+```
+from busoft import bp_softpath
+softpath = bp_softpath
+
+sassoftpath["samtools"]
+```
+
+由于流程可能会要写一些脚本文件，譬如RNA_seq.pipeline.py放在os.environ["BUPIPELINEPATH"] + "/RNA/"路径下。
+同时该路径下有个bin文件夹，放了preDE.py，extract_rpkm_from_ballgown.R，rpkm_merge.py文件。我们这时可以通过下面语句将它们加载到softpath里。
+都放在os.environ["BUPIPELINEPATH"] + "/RNA/bin/"路径下。
+```
+scr_path = os.environ["BUPIPELINEPATH"] + "/RNA/bin/"
+softpath = bp_softpath
+softpath.update({"preDE_script": scr_path + "preDE.py",
+                "extract_rpkm_from_ballgown": scr_path + "extract_rpkm_from_ballgown.R",
+                "rpkm_merge_script": scr_path + "rpkm_merge.py"})
+                
+#使用：
+softpath["preDE_script"]
+```
+
+#### 4.1.3 sample
+
+```
+from bupipeline import Sample
+sample_info = Sample(configs["sample_file"]) #configs["sample_file"]是文件路径
+labels = sample_info.labels
+```
+
+这里样本文件内容如下（可以用pandas.read_table读取，并至少含有sample, read1），对于双端文件需含有read2即可。
+```
+group	sample	    read1	                    read2
+flower	flower_rep1	ath_flower_rep1.R1.fq.gz	ath_flower_rep1.R2.fq.gz
+leaf	leaf_rep1	ath_leaf_rep1.R1.fq.gz	    ath_leaf_rep1.R2.fq.gz
+```
+
+Sample类会读取样品信息，其labels即原表的sample列（按顺序）。
+
+对于流程来讲，第一步用到的分析是sample_file里指定的测序数据路径，如上面的Star类，由于所有Tool类指定的fileins既可以是字符串，也可以是函数。因此这里可以将其指定为Sample对象的方法，用Sample对象的方法来获取fileins。
+
+如用fileins = sample_info.get_fileins来获取[read1, read2]路径。
+如用fileins = sample_info.get_fileins_only_read1来获取[read1]路径。
+
+#### 4.1.4 配置文件
+从主流程脚本可以看到主流程只提供一个参数，也就是指定配置文件。
+```
+config_file = sys.argv[1]
+configs = toml.load(config_file)
+```
+该配置文件是toml格式。
+
+示例如下：
+```
+sample_file = "sample.txt" #样品信息名
+orgnism_name = "ath"  #orgnism_name: ath
+dry_run_flag = false #true|false
+excuter = "QsubExcuter" #JobExcuter | QueueQsubExcuter | BsubExcuter | QueueQsubExcuter
+limit_cores = 0  #Only is used when limit_jobs is 0
+limit_jobs = 0
+
+star_core = 16
+featureCounts_core = 1
+
+select_tools = "star"
+
+[star]
+Header_STAR = 1
+Header_STAROnlyBest = 0
+StarBestMarkDump = 1
+RemoveDump_FeatureCounts_Unique_Mapped_Gene = 1
+MergeFeatureCounts = 1
+
+[star_best]
+Header_STAR = 0
+Header_STAROnlyBest = 1
+StarBestMarkDump = 1
+RemoveDump_FeatureCounts_Unique_Mapped_Gene = 1
+MergeFeatureCounts = 1
+```
+
+在主流程里`configs = toml.load(config_file)`加载了该文件。
+其中前6个是通用设置。
+`star_core = 16`和`featureCounts_core = 1`是某些Tool需要的。
+在用字符串指定Tool类属性时可以用如下指定: core = "{configs[star_core]}"
+
+主流程末尾用了下面语句：
+```
+tools = bp.get_tools_from_toml(configs, globals())
+main_pipeline = Pipeline(tools=tools, ...)
+```
+
+这里`tools = bp.get_tools_from_toml(configs, globals())`会根据configs[configs["select_tools"]]的值（是一个字典，如[star]指定的）。
+```
+[star]
+Header_STAR = 1
+Header_STAROnlyBest = 0
+StarBestMarkDump = 1
+RemoveDump_FeatureCounts_Unique_Mapped_Gene = 1
+MergeFeatureCounts = 1
+```
+这里键是类名，值指定程序是否运行。如果是0则不加载该步。如果是1就加载该步。这样可以通过toml来调节运行哪些步骤。譬如这里star可以分两种模式跑，一种是默认方式，一种是只要最优比对。这里是分别建了两个Tool类。这时可以通过设定一个为0，一个为1来调节使用哪个。当然对于这种简单的star比对，只是比对时参数不同的，也可以直接设计配置文件里其他参数调节。
+
+这里设为1只是加载，是否运行会根据是否已有输出文件以及输出文件的时间是否晚于输出文件的。也可以设为4强制运行。
+
+0 不加载
+1 加载。需要父任务不运行，fileout和filein比fileout早才不运行
+2 加载。需要父任务不运行，需要fileout
+3 加载。需要需要父任务不运行，需要fileout（暂时没有区分2和3，2以后再编）
+4 加载。强制运行。
